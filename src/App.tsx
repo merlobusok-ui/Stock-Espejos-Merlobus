@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { db } from './firebase'; 
-// 1. NUEVO: Agregamos 'onSnapshot' para escuchar cambios en vivo
 import { collection, doc, setDoc, updateDoc, deleteDoc, getDocs, writeBatch, onSnapshot } from 'firebase/firestore';
 
 import { 
   Package, LogOut, Factory, AlertCircle, BrainCircuit, Loader2, 
   ArrowRight, Layers, Globe, Save, Plus, Trash2, CheckCircle, Truck, X, 
-  Download, FileUp, Edit2, Search, Printer, Hammer, FileSpreadsheet, CloudUpload, Maximize, Minimize, UploadCloud, RefreshCw
+  Download, FileUp, Edit2, Search, Printer, Hammer, FileSpreadsheet, CloudUpload, Maximize, Minimize, RefreshCw, UploadCloud
 } from 'lucide-react';
 import { 
   ViewType, Product, RawMaterial, Recipe, ProductionOrder, Movement, UserProfile 
@@ -16,7 +15,7 @@ import { Card, Button, Input, Badge, SectionHeader } from './components/UI';
 import { getAIInventoryAdvice } from './services/geminiService';
 
 const K = {
-  STABLE: 'mb_data_v9_stable_final'
+  STABLE: 'mb_data_v10_gold'
 };
 
 const App: React.FC = () => {
@@ -41,9 +40,7 @@ const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMpQuery, setSearchMpQuery] = useState('');
 
-  // --- LÓGICA DE SINCRONIZACIÓN ---
-
-  // 1. Carga inicial (Offline First)
+  // --- CARGA INICIAL Y SYNC ---
   useEffect(() => {
     const saved = localStorage.getItem(K.STABLE);
     if (saved) {
@@ -55,145 +52,72 @@ const App: React.FC = () => {
         setOrders(d.orders || []);
         setHistory(d.history || []);
         if (d.user) setUser(d.user);
-      } catch (e) { console.error("Error cargando caché local", e); }
+      } catch (e) { console.error(e); }
     } else {
-        // Carga datos iniciales si es la primera vez absoluta
         const initialProducts = INITIAL_CATALOG.map((p, i) => ({ ...p, id: `p-${Date.now()}-${i}`, wip: 0 }));
         setProducts(initialProducts);
     }
     setLoading(false);
   }, []);
 
-  // 2. ESCUCHAS EN TIEMPO REAL (La Magia de Firebase)
   useEffect(() => {
-    // Si no estamos logueados, no escuchamos
     if (!user) return;
+    const unsubProd = onSnapshot(collection(db, "products"), (s) => { setIsOnline(true); const d = s.docs.map(doc => doc.data() as Product); if(d.length>0) setProducts(d); }, () => setIsOnline(false));
+    const unsubMps = onSnapshot(collection(db, "mps"), (s) => { const d = s.docs.map(doc => doc.data() as RawMaterial); if(d.length>0) setMps(d); });
+    const unsubRecipes = onSnapshot(collection(db, "recipes"), (s) => { const d = s.docs.map(doc => doc.data() as Recipe); if(d.length>0) setRecipes(d); });
+    const unsubOrders = onSnapshot(collection(db, "orders"), (s) => setOrders(s.docs.map(doc => doc.data() as ProductionOrder).sort((a,b)=>new Date(b.startedAt).getTime()-new Date(a.startedAt).getTime())));
+    const unsubHistory = onSnapshot(collection(db, "history"), (s) => setHistory(s.docs.map(doc => doc.data() as Movement).sort((a,b)=>new Date(b.ts).getTime()-new Date(a.ts).getTime()).slice(0,100)));
+    return () => { unsubProd(); unsubMps(); unsubRecipes(); unsubOrders(); unsubHistory(); };
+  }, [user]);
 
-    console.log("📡 Iniciando conexión en tiempo real...");
-    
-    // Escuchar colección 'products'
-    const unsubProd = onSnapshot(collection(db, "products"), (snapshot) => {
-        setIsOnline(true); // Si recibimos datos, estamos online
-        const data = snapshot.docs.map(doc => doc.data() as Product);
-        // Solo actualizamos si hay datos (para evitar borrar todo por error de conexión)
-        if (data.length > 0) setProducts(data);
-    }, (error) => {
-        console.log("Modo Offline (Productos):", error);
-        setIsOnline(false);
-    });
-
-    // Escuchar colección 'mps'
-    const unsubMps = onSnapshot(collection(db, "mps"), (snapshot) => {
-        const data = snapshot.docs.map(doc => doc.data() as RawMaterial);
-        if (data.length > 0) setMps(data);
-    });
-
-    // Escuchar 'orders'
-    const unsubOrders = onSnapshot(collection(db, "orders"), (snapshot) => {
-        const data = snapshot.docs.map(doc => doc.data() as ProductionOrder);
-        // Ordenar por fecha (más nuevo arriba) si vienen desordenados
-        setOrders(data.sort((a,b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()));
-    });
-
-     // Escuchar 'recipes'
-     const unsubRecipes = onSnapshot(collection(db, "recipes"), (snapshot) => {
-        const data = snapshot.docs.map(doc => doc.data() as Recipe);
-        if (data.length > 0) setRecipes(data);
-    });
-
-     // Escuchar 'history' (últimos 100)
-     const unsubHistory = onSnapshot(collection(db, "history"), (snapshot) => {
-        const data = snapshot.docs.map(doc => doc.data() as Movement);
-        setHistory(data.sort((a,b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 100));
-    });
-
-    return () => {
-        // Limpieza al cerrar componente
-        unsubProd(); unsubMps(); unsubOrders(); unsubRecipes(); unsubHistory();
-    };
-  }, [user]); // Se reinicia solo si cambia el usuario
-
-  // 3. Persistencia Local (Backup automático al recibir cambios de la nube o locales)
   useEffect(() => {
     if (!loading && user) {
-      const dataToSave = { products, mps, recipes, orders, history, user };
-      localStorage.setItem(K.STABLE, JSON.stringify(dataToSave));
+      localStorage.setItem(K.STABLE, JSON.stringify({ products, mps, recipes, orders, history, user }));
     }
   }, [products, mps, recipes, orders, history, user, loading]);
 
   const forceSave = useCallback(() => {
-    const dataToSave = { products, mps, recipes, orders, history, user };
-    localStorage.setItem(K.STABLE, JSON.stringify(dataToSave));
-    console.log("💾 Guardado manual ejecutado");
+    localStorage.setItem(K.STABLE, JSON.stringify({ products, mps, recipes, orders, history, user }));
   }, [products, mps, recipes, orders, history, user]);
 
   const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(err => console.error(err));
-      setIsFullscreen(true);
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-        setIsFullscreen(false);
-      }
-    }
+    if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(console.error); setIsFullscreen(true); } 
+    else { if (document.exitFullscreen) { document.exitFullscreen(); setIsFullscreen(false); } }
   };
 
-  // --- CRUD OPERATIONS (Escriben en Firebase, el listener actualiza el estado local) ---
+  // --- LOGICA PRINCIPAL ---
 
   const logMovement = useCallback(async (tipo: string, detalle: string) => {
     const newMov = { id: Math.random().toString(36).substr(2, 9), ts: new Date().toISOString(), tipo, detalle, user: user?.name || 'Sistema' };
-    // Optimistic UI update (actualiza visualmente ya, por si el internet es lento)
     setHistory(prev => [newMov, ...prev].slice(0, 100));
     try { await setDoc(doc(db, 'history', newMov.id), newMov); } catch (e) { console.error(e); }
   }, [user]);
 
-  const handleUpdateProductField = async (id: string, field: keyof Product, value: any) => {
-    // Optimistic update
-    setProducts(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
-    try {
-        const ref = doc(db, 'products', id);
-        await updateDoc(ref, { [field]: value });
-    } catch (e) { console.error(e); }
+  const handleUpdateField = async (col: string, id: string, field: string, value: any, setter: any) => {
+    setter((prev: any[]) => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
+    try { await updateDoc(doc(db, col, id), { [field]: value }); } catch (e) { console.error(e); }
   };
 
-  const handleUpdateMpField = async (id: string, field: keyof RawMaterial, value: any) => {
-    setMps(prev => prev.map(m => m.id === id ? { ...m, [field]: value } : m));
-    try {
-        const ref = doc(db, 'mps', id);
-        await updateDoc(ref, { [field]: value });
-    } catch (e) { console.error(e); }
-  };
-
-  const handleDeleteProduct = (id: string) => {
-    if (confirm('¿Eliminar SKU?')) {
-      setProducts(prev => prev.filter(p => p.id !== id));
-      deleteDoc(doc(db, 'products', id)).catch(e => console.error(e));
-    }
-  };
-
-  const handleDeleteMp = (id: string) => {
-    if (confirm('¿Eliminar insumo?')) {
-      setMps(prev => prev.filter(m => m.id !== id));
-      deleteDoc(doc(db, 'mps', id)).catch(e => console.error(e));
+  const handleDelete = (col: string, id: string, setter: any) => {
+    if (confirm('¿Seguro desea eliminar este item?')) {
+      setter((prev: any[]) => prev.filter(p => p.id !== id));
+      deleteDoc(doc(db, col, id)).catch(console.error);
     }
   };
 
   const handleMpEntry = async (id: string, qty: number) => {
     const mp = mps.find(m => m.id === id);
     if (!mp) return;
-    const newStock = (mp.stock || 0) + qty;
-    await handleUpdateMpField(id, 'stock', newStock);
+    await handleUpdateField('mps', id, 'stock', (mp.stock || 0) + qty, setMps);
     logMovement('INGRESO_MP', `+${qty}u de ${mp.desc || mp.sku}`);
   };
 
-  const handleProductDispatch = async (id: string, qty: number, extra?: { cliente?: string, remito?: string, fecha?: string }) => {
+  const handleProductDispatch = async (id: string, qty: number, extra?: { cliente?: string }) => {
     const p = products.find(x => x.id === id);
     if (!p) return;
     if (p.stock < qty) { alert('Stock insuficiente'); return; }
-    const newStock = p.stock - qty;
-    await handleUpdateProductField(id, 'stock', newStock);
-    logMovement('DESPACHO', `-${qty}u de ${p.sku} | Cliente: ${extra?.cliente || 'N/A'}`);
+    await handleUpdateField('products', id, 'stock', p.stock - qty, setProducts);
+    logMovement('DESPACHO', `-${qty}u de ${p.sku} | ${extra?.cliente || 'N/A'}`);
   };
 
   const handleStartProduction = async (targetId: string, targetType: 'product' | 'mp', qty: number) => {
@@ -202,193 +126,146 @@ const App: React.FC = () => {
 
     const productRecipes = recipes.filter(r => r.targetId === targetId && r.targetType === targetType);
     const missing: string[] = [];
-    
     productRecipes.forEach(r => {
       const mp = mps.find(m => m.id === r.mpId);
       const req = r.qty * qty;
       if (!mp || mp.stock < req) missing.push(`${mp?.desc || mp?.sku} (Falta: ${req - (mp?.stock || 0)}u)`);
     });
 
-    if (missing.length > 0) {
-      alert(`⚠️ PRODUCCIÓN BLOQUEADA\n\nFaltan componentes:\n${missing.join('\n')}`);
-      return; 
-    }
+    if (missing.length > 0) { alert(`⚠️ Faltan componentes:\n${missing.join('\n')}`); return; }
 
-    // Descontar MP (Optimistic)
     const updatedMps = mps.map(m => {
       const recipeItem = productRecipes.find(r => r.mpId === m.id);
-      if (recipeItem) return { ...m, stock: m.stock - (recipeItem.qty * qty) };
-      return m;
+      return recipeItem ? { ...m, stock: m.stock - (recipeItem.qty * qty) } : m;
     });
     setMps(updatedMps);
-
-    // Actualizar MPs en Firebase
-    updatedMps.forEach(async (m) => {
-        const original = mps.find(orig => orig.id === m.id);
-        if (original && original.stock !== m.stock) {
-            await updateDoc(doc(db, 'mps', m.id), { stock: m.stock });
-        }
-    });
+    updatedMps.forEach(m => { if(mps.find(old=>old.id===m.id)?.stock !== m.stock) updateDoc(doc(db,'mps',m.id), {stock: m.stock}); });
 
     const newOrder: ProductionOrder = { 
       id: Math.random().toString(36).substr(2, 9), targetId, targetType, productName: target.sku, qty, 
       status: 'in_progress', startedAt: new Date().toISOString(), startedBy: user?.name || 'Sistema' 
     };
-    
     setOrders(prev => [newOrder, ...prev]);
     
-    if (targetType === 'product') await handleUpdateProductField(targetId, 'wip', (target.wip || 0) + qty);
-    else await handleUpdateMpField(targetId, 'wip', ((target as RawMaterial).wip || 0) + qty);
+    if (targetType === 'product') await handleUpdateField('products', targetId, 'wip', (target.wip || 0) + qty, setProducts);
+    else await handleUpdateField('mps', targetId, 'wip', ((target as RawMaterial).wip || 0) + qty, setMps);
 
     logMovement('PRODUCCION_INICIO', `${qty}u de ${target.sku}`);
-    setDoc(doc(db, 'orders', newOrder.id), newOrder).catch(e => console.error(e));
+    setDoc(doc(db, 'orders', newOrder.id), newOrder);
   };
 
   const handleCompleteOrder = async (order: ProductionOrder) => {
     if (order.targetType === 'product') {
       const prod = products.find(p => p.id === order.targetId);
       if (prod) {
-        await handleUpdateProductField(prod.id, 'stock', (prod.stock || 0) + order.qty);
-        await handleUpdateProductField(prod.id, 'wip', Math.max(0, (prod.wip || 0) - order.qty));
+        await handleUpdateField('products', prod.id, 'stock', (prod.stock || 0) + order.qty, setProducts);
+        await handleUpdateField('products', prod.id, 'wip', Math.max(0, (prod.wip || 0) - order.qty), setProducts);
       }
     } else {
       const mp = mps.find(m => m.id === order.targetId);
       if (mp) {
-        await handleUpdateMpField(mp.id, 'stock', (mp.stock || 0) + order.qty);
-        await handleUpdateMpField(mp.id, 'wip', Math.max(0, (mp.wip || 0) - order.qty));
+        await handleUpdateField('mps', mp.id, 'stock', (mp.stock || 0) + order.qty, setMps);
+        await handleUpdateField('mps', mp.id, 'wip', Math.max(0, (mp.wip || 0) - order.qty), setMps);
       }
     }
     setOrders(prev => prev.filter(o => o.id !== order.id));
     logMovement('PRODUCCION_FIN', `${order.qty}u ${order.productName}`);
-    deleteDoc(doc(db, 'orders', order.id)).catch(e => console.error(e));
+    deleteDoc(doc(db, 'orders', order.id));
   };
 
-  const handleAddRecipeItem = (targetId: string, targetType: 'product' | 'mp', mpId: string, qty: number) => {
-    const newRecipe: Recipe = { id: Math.random().toString(36).substr(2, 9), targetId, targetType, mpId, qty };
-    setRecipes(prev => [...prev, newRecipe]);
-    setDoc(doc(db, 'recipes', newRecipe.id), newRecipe).catch(e => console.error(e));
-  };
+  // --- IMPORTADORES MASIVOS CSV ---
 
-  const handleDeleteRecipeItem = (id: string) => {
-    setRecipes(prev => prev.filter(r => r.id !== id));
-    deleteDoc(doc(db, 'recipes', id)).catch(e => console.error(e));
-  };
-
-  const exportToCsv = () => {
-    const headers = "Tipo,SKU,Marca,Modelo,Lado,Stock,Minimo,En Taller\n";
-    const pRows = products.map(p => `Espejo,${p.sku},${p.marca},${p.modelo},${p.lado},${p.stock},${p.min},${p.wip}`).join("\n");
-    const mRows = mps.map(m => `Insumo,${m.sku},${m.desc},,,${m.stock},${m.min},${m.wip || 0}`).join("\n");
-    const blob = new Blob([headers + pRows + "\n" + mRows], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `merlobus_excel_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
-  };
-
-  const handlePrint = () => {
-    window.print();
-  };
-
-  // RESTAURAR BACKUP JSON
-  const handleJsonRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-        const data = JSON.parse(text);
-        
-        if (!data.products && !data.mps) {
-            alert("El archivo no parece ser un backup válido.");
-            return;
-        }
-
-        if (confirm(`¿Restaurar?\n- ${data.products?.length || 0} Productos\n- ${data.mps?.length || 0} Insumos`)) {
-            // Subida masiva a Firebase para que todos se enteren
-            setLoading(true);
-            const uploadCollection = async (colName: string, items: any[]) => {
-                const batch = writeBatch(db);
-                items.forEach((item) => {
-                    const ref = doc(db, colName, item.id);
-                    batch.set(ref, item);
-                });
-                await batch.commit();
-            };
-
-            await uploadCollection('products', data.products || []);
-            await uploadCollection('mps', data.mps || []);
-            await uploadCollection('recipes', data.recipes || []);
-            setLoading(false);
-            alert("Datos restaurados y sincronizados a la nube.");
-        }
-      } catch (error) {
-        console.error(error);
-        alert("Error al leer JSON.");
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = ''; 
-  };
-
+  // 1. PRODUCTOS Y MPS (Simple)
   const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'products' | 'mps') => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target?.result as string;
-      const lines = text.split('\n').filter(l => l.trim() !== '');
-      if (lines.length < 2) return;
+      const lines = (event.target?.result as string).split('\n').filter(l => l.trim() !== '');
+      if (lines.length < 1) return;
       const newItems: any[] = [];
-      lines.slice(1).forEach(row => {
+      
+      lines.forEach((row, idx) => {
+        if(idx === 0 && row.toLowerCase().includes('sku')) return; // Skip header if exists
         const v = row.split(',').map(s => s.trim());
-        if (type === 'products') {
-          newItems.push({ id: `p-${Date.now()}-${Math.random()}`, sku: v[0] || 'N/A', marca: v[1] || '', modelo: v[2] || '', lado: v[3] || '', min: parseInt(v[4]) || 5, stock: parseInt(v[5]) || 0, wip: 0 });
-        } else {
-          newItems.push({ id: `mp-${Date.now()}-${Math.random()}`, sku: v[0] || 'N/A', desc: v[1] || 'Insumo', min: parseInt(v[2]) || 10, stock: parseInt(v[3]) || 0, pending: 0, wip: 0 });
+        if (type === 'products' && v[0]) {
+          newItems.push({ id: `p-${Date.now()}-${Math.random()}`, sku: v[0], marca: v[1]||'', modelo: v[2]||'', lado: v[3]||'', min: parseInt(v[4])||5, stock: parseInt(v[5])||0, wip: 0 });
+        } else if (type === 'mps' && v[0]) {
+          newItems.push({ id: `mp-${Date.now()}-${Math.random()}`, sku: v[0], desc: v[1]||'Insumo', min: parseInt(v[2])||10, stock: parseInt(v[3])||0, pending: 0, wip: 0 });
         }
       });
       
-      // Subir cada uno a Firebase
-      newItems.forEach(item => {
-          setDoc(doc(db, type, item.id), item).catch(console.error);
-      });
-      logMovement('CARGA_MASIVA', `${newItems.length} registros en ${type}`);
+      if(newItems.length > 0 && confirm(`¿Cargar ${newItems.length} items a ${type}?`)) {
+          const batch = writeBatch(db);
+          newItems.forEach(item => batch.set(doc(db, type, item.id), item));
+          batch.commit().then(() => alert("Carga masiva completada con éxito."));
+      }
     };
     reader.readAsText(file);
     e.target.value = '';
   };
 
-  const syncToCloud = async () => {
-    if (!isOnline) { alert("Sin conexión."); return; }
-    if (!confirm("Esto sobrescribirá la nube con tus datos locales. ¿Seguro?")) return;
-    
-    try {
-      setLoading(true);
-      const uploadCollection = async (colName: string, items: any[]) => {
-        const batchSize = 400; 
-        for (let i = 0; i < items.length; i += batchSize) {
-            const chunk = items.slice(i, i + batchSize);
-            const batch = writeBatch(db);
-            chunk.forEach((item) => {
-                const ref = doc(db, colName, item.id);
-                batch.set(ref, item);
-            });
-            await batch.commit();
-        }
-      };
+  // 2. RECETAS (Avanzado: Vincula por SKU)
+  const handleCsvRecipes = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        const lines = (event.target?.result as string).split('\n').filter(l => l.trim() !== '');
+        const newRecipes: Recipe[] = [];
+        let errors = 0;
 
-      await uploadCollection('products', products);
-      await uploadCollection('mps', mps);
-      await uploadCollection('recipes', recipes);
-      
-      alert("✅ Sincronización Forzada completada.");
-    } catch (e) {
-      console.error(e);
-      alert("Error: " + e);
-    } finally {
-      setLoading(false);
-    }
+        lines.forEach((row, idx) => {
+            if(idx === 0 && row.toLowerCase().includes('sku')) return;
+            const v = row.split(',').map(s => s.trim());
+            // FORMATO: SKU_PRODUCTO, SKU_INSUMO, CANTIDAD
+            const prodSku = v[0];
+            const mpSku = v[1];
+            const qty = parseFloat(v[2]);
+
+            const prod = products.find(p => p.sku === prodSku);
+            const mp = mps.find(m => m.sku === mpSku);
+
+            if (prod && mp && qty > 0) {
+                newRecipes.push({ id: `r-${Date.now()}-${Math.random()}`, targetId: prod.id, targetType: 'product', mpId: mp.id, qty });
+            } else {
+                errors++;
+            }
+        });
+
+        if (newRecipes.length > 0 && confirm(`Encontradas ${newRecipes.length} relaciones válidas.\n(Errores/No encontrados: ${errors})\n\n¿Vincular recetas ahora?`)) {
+            const batch = writeBatch(db);
+            newRecipes.forEach(r => batch.set(doc(db, 'recipes', r.id), r));
+            await batch.commit();
+            alert("✅ Recetas vinculadas correctamente.");
+        } else if (newRecipes.length === 0) {
+            alert("⚠️ No se pudieron vincular recetas. Verificá que los SKU existan en el sistema.");
+        }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleJsonRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        try {
+            const data = JSON.parse(event.target?.result as string);
+            if (!data.products) throw new Error();
+            if (confirm(`¿Restaurar Backup completo?`)) {
+                const batch = writeBatch(db);
+                data.products?.forEach((i:any) => batch.set(doc(db, 'products', i.id), i));
+                data.mps?.forEach((i:any) => batch.set(doc(db, 'mps', i.id), i));
+                data.recipes?.forEach((i:any) => batch.set(doc(db, 'recipes', i.id), i));
+                await batch.commit();
+                alert("Restauración completada.");
+            }
+        } catch (e) { alert("Archivo inválido."); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-blue-600" size={48} /></div>;
@@ -399,7 +276,7 @@ const App: React.FC = () => {
         <Card className="w-full max-w-sm p-10 bg-white rounded-[3rem] shadow-2xl">
           <div className="text-center mb-8">
             <div className="bg-[#2B3860] w-20 h-20 rounded-[2rem] flex items-center justify-center mx-auto mb-4 text-white"><Package size={40} /></div>
-            <h1 className="text-3xl font-black text-[#2B3860]">Merlobus v9</h1>
+            <h1 className="text-3xl font-black text-[#2B3860]">Merlobus Gold</h1>
           </div>
           <form onSubmit={(e) => { e.preventDefault(); if (tempName.trim()) setUser({ name: tempName, role: 'admin' }); }} className="space-y-4">
             <Input autoFocus placeholder="Nombre de Operario" value={tempName} onChange={e => setTempName(e.target.value)} />
@@ -472,7 +349,16 @@ const App: React.FC = () => {
           )}
 
           {activeTab === ViewType.RECIPES && (
-            <RecipeManager products={products} mps={mps} recipes={recipes} onAddRecipeItem={handleAddRecipeItem} onDeleteRecipeItem={handleDeleteRecipeItem} onForceSave={forceSave} />
+            <RecipeManager 
+                products={products} mps={mps} recipes={recipes} 
+                onAddRecipeItem={(tId:string, tType:string, mpId:string, qty:number) => {
+                    const id = `r-${Date.now()}`;
+                    setDoc(doc(db,'recipes', id), {id, targetId: tId, targetType: tType, mpId, qty});
+                }} 
+                onDeleteRecipeItem={(id:string) => deleteDoc(doc(db,'recipes',id))} 
+                onForceSave={forceSave}
+                onCsvUpload={handleCsvRecipes} // PASAMOS LA FUNCIÓN DE CSV ACÁ
+            />
           )}
 
           {activeTab === ViewType.RAW_MATERIALS && (
@@ -480,8 +366,11 @@ const App: React.FC = () => {
               <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
                 <SectionHeader title="Insumos" />
                 <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-2">
-                   <Button onClick={handlePrint} variant="secondary" icon={Printer}>Imprimir</Button>
-                   <Button onClick={exportToCsv} variant="secondary" icon={FileSpreadsheet}>Excel</Button>
+                   <Button onClick={()=>window.print()} variant="secondary" icon={Printer}>Print</Button>
+                   <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all font-bold text-xs whitespace-nowrap text-slate-600">
+                      <FileUp size={16} /> Subir CSV
+                      <input type="file" accept=".csv" className="hidden" onChange={(e) => handleCsvUpload(e, 'mps')} />
+                   </label>
                    <Button onClick={() => setShowAddMp(true)} icon={Plus}>Añadir</Button>
                 </div>
               </div>
@@ -494,12 +383,8 @@ const App: React.FC = () => {
                     e.preventDefault();
                     const fd = new FormData(e.currentTarget);
                     const newMp: RawMaterial = { 
-                      id: `mp-${Date.now()}`, 
-                      sku: fd.get('sku') as string, 
-                      desc: fd.get('desc') as string, 
-                      min: Number(fd.get('min')), 
-                      stock: Number(fd.get('stock')), 
-                      pending: 0, wip: 0 
+                      id: `mp-${Date.now()}`, sku: fd.get('sku') as string, desc: fd.get('desc') as string, 
+                      min: Number(fd.get('min')), stock: Number(fd.get('stock')), pending: 0, wip: 0 
                     };
                     setDoc(doc(db, 'mps', newMp.id), newMp).catch(e => console.error(e));
                     setShowAddMp(false);
@@ -513,7 +398,7 @@ const App: React.FC = () => {
                   </form>
                 </Card>
               )}
-              <InventoryTable data={mps.filter(m => m.desc.toLowerCase().includes(searchMpQuery.toLowerCase()) || m.sku.toLowerCase().includes(searchMpQuery.toLowerCase()))} type="mps" onUpdateField={handleUpdateMpField} onDelete={handleDeleteMp} onAction={handleMpEntry} />
+              <InventoryTable data={mps.filter(m => m.desc.toLowerCase().includes(searchMpQuery.toLowerCase()) || m.sku.toLowerCase().includes(searchMpQuery.toLowerCase()))} type="mps" onUpdateField={(id,f,v)=>handleUpdateField('mps',id,f,v,setMps)} onDelete={(id)=>handleDelete('mps',id,setMps)} onAction={handleMpEntry} />
             </div>
           )}
 
@@ -522,10 +407,9 @@ const App: React.FC = () => {
                <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
                 <SectionHeader title="Productos Finales" />
                  <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-2">
-                   <Button onClick={handlePrint} variant="secondary" icon={Printer}>Print</Button>
-                   <Button onClick={exportToCsv} variant="secondary" icon={FileSpreadsheet}>Excel</Button>
-                   <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all font-bold text-xs whitespace-nowrap">
-                      <FileUp size={16} /> CSV
+                   <Button onClick={()=>window.print()} variant="secondary" icon={Printer}>Print</Button>
+                   <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all font-bold text-xs whitespace-nowrap text-slate-600">
+                      <FileUp size={16} /> Subir CSV
                       <input type="file" accept=".csv" className="hidden" onChange={(e) => handleCsvUpload(e, 'products')} />
                     </label>
                    <Button onClick={() => setShowAddProduct(true)} icon={Plus}>Nuevo</Button>
@@ -540,14 +424,8 @@ const App: React.FC = () => {
                     e.preventDefault();
                     const fd = new FormData(e.currentTarget);
                     const newProd: Product = { 
-                      id: `p-${Date.now()}`, 
-                      sku: fd.get('sku') as string, 
-                      marca: fd.get('marca') as string, 
-                      modelo: fd.get('modelo') as string, 
-                      lado: fd.get('lado') as string, 
-                      min: Number(fd.get('min')), 
-                      stock: Number(fd.get('stock')), 
-                      wip: 0 
+                      id: `p-${Date.now()}`, sku: fd.get('sku') as string, marca: fd.get('marca') as string, modelo: fd.get('modelo') as string, 
+                      lado: fd.get('lado') as string, min: Number(fd.get('min')), stock: Number(fd.get('stock')), wip: 0 
                     };
                     setDoc(doc(db, 'products', newProd.id), newProd).catch(e => console.error(e));
                     setShowAddProduct(false);
@@ -563,7 +441,7 @@ const App: React.FC = () => {
                   </form>
                 </Card>
               )}
-              <InventoryTable data={products.filter(p => p.sku.toLowerCase().includes(searchQuery.toLowerCase()) || p.marca.toLowerCase().includes(searchQuery.toLowerCase()))} type="products" onUpdateField={handleUpdateProductField} onDelete={handleDeleteProduct} onAction={handleProductDispatch} />
+              <InventoryTable data={products.filter(p => p.sku.toLowerCase().includes(searchQuery.toLowerCase()) || p.marca.toLowerCase().includes(searchQuery.toLowerCase()))} type="products" onUpdateField={(id,f,v)=>handleUpdateField('products',id,f,v,setProducts)} onDelete={(id)=>handleDelete('products',id,setProducts)} onAction={handleProductDispatch} />
             </div>
           )}
 
@@ -573,15 +451,11 @@ const App: React.FC = () => {
                 <Globe size={80} className={`mx-auto ${isOnline ? 'text-emerald-500' : 'text-slate-300'}`} />
                 <h3 className="text-2xl md:text-3xl font-black text-slate-800">{isOnline ? 'Sincronización en Vivo ACTIVA' : 'Modo Offline'}</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Button variant="secondary" onClick={handlePrint} className="py-6" icon={Printer}>Imprimir PDF</Button>
-                  <Button variant="secondary" onClick={exportToCsv} className="py-6" icon={FileSpreadsheet}>Exportar Excel</Button>
-                  
                   <label className="col-span-full py-6 flex items-center justify-center gap-2 cursor-pointer bg-orange-50 text-orange-600 border border-orange-200 px-4 rounded-xl hover:bg-orange-100 transition-all font-black text-sm uppercase">
-                      <UploadCloud size={20} /> Restaurar Backup JSON
+                      <UploadCloud size={20} /> Restaurar Backup JSON (Completo)
                       <input type="file" accept=".json" className="hidden" onChange={handleJsonRestore} />
                   </label>
-
-                  <Button variant="special" onClick={syncToCloud} className="col-span-full py-6" icon={RefreshCw}>Forzar Resincronización</Button>
+                  <Button variant="special" onClick={()=>window.location.reload()} className="col-span-full py-6" icon={RefreshCw}>Recargar App</Button>
                 </div>
               </Card>
             </div>
@@ -614,11 +488,6 @@ const App: React.FC = () => {
     </div>
   );
 };
-
-// ... COMPONENTES AUXILIARES (StatCard, InventoryTable, RecipeManager, etc.) SE MANTIENEN IGUAL ...
-// Para ahorrar espacio aquí, asumo que mantienes el código de los componentes de abajo
-// (InventoryTable, RecipeManager, OperationsManager, PlanningView, StatCard).
-// Solo copia y pega los componentes de abajo del código anterior si los borraste.
 
 const StatCard = ({ title, value, icon: Icon, color }: any) => {
   const colors: any = { blue: "bg-blue-50 text-blue-600", red: "bg-red-50 text-red-600" };
@@ -668,7 +537,6 @@ const InventoryTable = ({ data, type, onUpdateField, onDelete, onAction }: any) 
                 <tr className={`hover:bg-slate-50 transition-all text-xs md:text-sm ${isEditing ? 'bg-blue-50/30' : ''}`}>
                   <td className="p-2 md:p-5 text-slate-400 font-mono">{index + 1}</td>
                   <td className="p-2 md:p-5 font-black text-slate-700">{isEditing ? <Input value={item.sku} onChange={e => onUpdateField(item.id, 'sku', e.target.value)} /> : item.sku}</td>
-                  
                   {type === 'products' ? (
                     <>
                       <td className="p-2 md:p-5 text-slate-500 font-medium">{isEditing ? <Input value={item.marca} onChange={e => onUpdateField(item.id, 'marca', e.target.value)} /> : item.marca}</td>
@@ -678,13 +546,12 @@ const InventoryTable = ({ data, type, onUpdateField, onDelete, onAction }: any) 
                   ) : (
                     <td className="p-2 md:p-5 text-slate-500 font-medium">{isEditing ? <Input value={item.desc} onChange={e => onUpdateField(item.id, 'desc', e.target.value)} /> : item.desc}</td>
                   )}
-
                   <td className="p-2 md:p-5 text-center"><Input type="number" className="w-16 md:w-20 mx-auto text-center font-bold" value={item.min} onChange={e => onUpdateField(item.id, 'min', parseInt(e.target.value) || 0)} /></td>
                   <td className="p-2 md:p-5 text-center"><Input type="number" className={`w-16 md:w-24 mx-auto text-center font-black ${isLow ? 'text-red-600 bg-red-50' : 'text-emerald-600'}`} value={item.stock} onChange={e => onUpdateField(item.id, 'stock', parseInt(e.target.value) || 0)} /></td>
                   <td className="p-2 md:p-5 text-center font-black text-blue-600">{item.wip || 0}</td>
                   <td className="p-2 md:p-5 text-right flex justify-end gap-1 md:gap-2 no-print">
                     <button onClick={() => { setActiveActionId(isActionActive ? null : item.id); setQtyInput(1); setCliente(''); }} className={`p-2 rounded-xl transition-all ${isActionActive ? 'bg-emerald-600 text-white shadow-md' : 'text-emerald-600 hover:bg-emerald-50'}`} title="Mover"><Truck size={16}/></button>
-                    <button onClick={() => setEditingId(isEditing ? null : item.id)} className={`p-2 rounded-xl transition-all ${isEditing ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-100'}`} title="Editar">{isEditing ? <CheckCircle size={16}/> : <Edit2 size={16}/>}</button>
+                    <button onClick={() => setEditingId(isEditing ? null : item.id)} className={`p-2 rounded-xl transition-all ${isEditing ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-100'}`} title="Editar"><Edit2 size={16}/></button>
                     <button onClick={() => onDelete(item.id)} className="p-2 text-red-300 hover:text-red-600 hover:bg-red-50 rounded-xl" title="Eliminar"><Trash2 size={16}/></button>
                   </td>
                 </tr>
@@ -711,7 +578,7 @@ const InventoryTable = ({ data, type, onUpdateField, onDelete, onAction }: any) 
   );
 };
 
-const RecipeManager = ({ products, mps, recipes, onAddRecipeItem, onDeleteRecipeItem, onForceSave }: any) => {
+const RecipeManager = ({ products, mps, recipes, onAddRecipeItem, onDeleteRecipeItem, onForceSave, onCsvUpload }: any) => {
   const [targetType, setTargetType] = useState<'product' | 'mp'>('product');
   const [selId, setSelId] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -732,13 +599,18 @@ const RecipeManager = ({ products, mps, recipes, onAddRecipeItem, onDeleteRecipe
           <option value="">-- Seleccionar Item --</option>
           {targetType === 'product' ? products.map((p:any) => <option key={p.id} value={p.id}>{p.sku}</option>) : mps.map((m:any) => <option key={m.id} value={m.id}>{m.desc || m.sku}</option>)}
         </select>
-        
         {selId && (
-          <Button onClick={() => { onForceSave(); alert("✅ Receta asegurada."); }} variant="special" className="w-full py-4 rounded-xl" icon={Save}>
-            Guardar Cambios
-          </Button>
+          <Button onClick={() => { onForceSave(); alert("✅ Receta asegurada."); }} variant="special" className="w-full py-4 rounded-xl" icon={Save}>Guardar Cambios</Button>
         )}
+
+        <hr className="border-slate-100 my-4" />
+        <p className="text-xs text-slate-400 uppercase font-bold tracking-wider mb-2">Carga Masiva de Recetas</p>
+        <label className="flex items-center justify-center gap-2 cursor-pointer bg-blue-50 text-blue-600 border border-blue-200 px-4 py-3 rounded-xl hover:bg-blue-100 transition-all font-bold text-xs uppercase text-center">
+            <FileUp size={16} /> Subir CSV (SKU PROD, SKU INSUMO, CANT)
+            <input type="file" accept=".csv" className="hidden" onChange={onCsvUpload} />
+        </label>
       </Card>
+      
       <Card className="md:col-span-2 p-4 md:p-10 min-h-[500px] shadow-2xl relative bg-white">
         <div className="flex justify-between items-center mb-8">
           <h3 className="font-black text-lg md:text-2xl text-slate-800">Composición</h3>
@@ -849,33 +721,25 @@ const OperationsManager = ({ products, mps, recipes, orders, onStartOrder, onCom
     </div>
   );
 };
+
 const PlanningView = ({ products, mps, recipes }: any) => {
   const [sel, setSel] = useState('');
   const [qty, setQty] = useState(1);
 
-  // ESTA ES LA FUNCIÓN QUE SE ROMPÍA. AHORA TIENE FRENO DE SEGURIDAD (depth > 10).
   const getFullRequirements = useCallback((targetId: string, targetType: 'product' | 'mp', multiplier: number, depth: number = 0): any[] => {
-    // 1. FRENO DE MANO: Si entramos en un bucle infinito, cortamos acá para no colgar la PC.
     if (depth > 10) {
-        console.error("⚠️ Se detectó una receta circular o demasiado profunda. Cortando cálculo.");
+        console.error("⚠️ Se detectó una receta circular o demasiado profunda.");
         return [{ mp: { desc: "ERROR: BUCLE EN RECETA", sku: "ERR-LOOP", stock: 0 }, needed: 0, depth, parentId: targetId }];
     }
-
     const immediate = recipes.filter((r: any) => r.targetId === targetId && r.targetType === targetType);
     let all: any[] = [];
-    
     immediate.forEach((r: any) => {
       const mp = mps.find((m: any) => m.id === r.mpId);
       const neededTotal = r.qty * multiplier;
-      
       all.push({ mp, needed: neededTotal, depth, parentId: targetId });
-      
-      // Solo seguimos buscando hijos si NO es el mismo ID (evita bucle directo A -> A)
       if (r.mpId !== targetId) {
           const subRecipes = recipes.filter((sr: any) => sr.targetId === r.mpId && sr.targetType === 'mp');
-          if (subRecipes.length > 0) {
-            all = [...all, ...getFullRequirements(r.mpId, 'mp', neededTotal, depth + 1)];
-          }
+          if (subRecipes.length > 0) all = [...all, ...getFullRequirements(r.mpId, 'mp', neededTotal, depth + 1)];
       }
     });
     return all;
@@ -883,12 +747,7 @@ const PlanningView = ({ products, mps, recipes }: any) => {
 
   const requirements = useMemo(() => {
     if (!sel) return [];
-    try {
-        return getFullRequirements(sel, 'product', qty);
-    } catch (e) {
-        console.error("Error calculando receta", e);
-        return [];
-    }
+    try { return getFullRequirements(sel, 'product', qty); } catch (e) { return []; }
   }, [sel, qty, getFullRequirements]);
 
   return (
@@ -921,9 +780,7 @@ const PlanningView = ({ products, mps, recipes }: any) => {
               {requirements.map((req:any, i:number) => {
                 const diff = (req.mp?.stock || 0) - req.needed;
                 const isSemie = recipes.some((sr: any) => sr.targetId === req.mp?.id && sr.targetType === 'mp');
-                // Check visual para detectar dónde está el error
                 const isError = req.mp?.sku === 'ERR-LOOP';
-                
                 return (
                   <tr key={i} className={`text-sm hover:bg-slate-50 transition-colors ${req.depth > 0 ? 'bg-blue-50/10' : ''} ${isError ? 'bg-red-100' : ''}`}>
                     <td className="py-4 md:py-6 text-slate-300 font-mono text-xs">{i+1}</td>
@@ -931,7 +788,7 @@ const PlanningView = ({ products, mps, recipes }: any) => {
                       <div className="flex items-center gap-4" style={{ paddingLeft: `${req.depth * 20}px` }}>
                         {req.depth > 0 ? <RefreshCw size={14} className="text-blue-400" /> : <div className="w-3 h-3 bg-slate-800 rounded-full"></div>}
                         <span className={`font-black uppercase text-sm md:text-lg ${req.depth > 0 ? 'text-blue-700' : 'text-slate-800'} ${isError ? 'text-red-600' : ''}`}>
-                          {req.mp?.desc || req.mp?.sku || 'Material desconocido'}
+                          {req.mp?.desc || req.mp?.sku || 'Material'}
                         </span>
                         {isSemie && <Badge type="warn" text="SEMI" />}
                       </div>
@@ -949,4 +806,5 @@ const PlanningView = ({ products, mps, recipes }: any) => {
     </div>
   );
 };
+
 export default App;
