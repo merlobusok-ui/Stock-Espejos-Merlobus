@@ -1,6 +1,8 @@
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { createClient } from '@supabase/supabase-js';
+// 1. CAMBIO: Importamos Firebase en lugar de Supabase
+import { db } from './firebase'; 
+import { collection, doc, setDoc, updateDoc, deleteDoc, getDocs, writeBatch, addDoc } from 'firebase/firestore';
+
 import { 
   Package, LogOut, Factory, AlertCircle, BrainCircuit, Loader2, 
   ArrowRight, Layers, Globe, History, LayoutDashboard, Calculator,
@@ -14,9 +16,6 @@ import { TABS, INITIAL_CATALOG } from './constants';
 import { Card, Button, Input, Badge, SectionHeader } from './components/UI';
 import { getAIInventoryAdvice } from './services/geminiService';
 
-const SUPABASE_URL = "https://ackljuztzpklddssbovs.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFja2xqdXp0enBrbGRkc3Nib3ZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg3ODQ3OTUsImV4cCI6MjA4NDM2MDc5NX0.Rf7HFaLikmKelpikr_3CiQsfzjS5sHp3T-HTv75XXyE";
-
 // Clave única v9 estable
 const K = {
   STABLE: 'mb_data_v9_stable_final'
@@ -26,17 +25,18 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ViewType>(ViewType.DASHBOARD);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [tempName, setTempName] = useState('');
-  const [supabase] = useState(() => createClient(SUPABASE_URL, SUPABASE_KEY));
+  
+  // 2. CAMBIO: Eliminamos estado de Supabase client
   const [isOnline, setIsOnline] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  
+   
   // Estados principales
   const [products, setProducts] = useState<Product[]>([]);
   const [mps, setMps] = useState<RawMaterial[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [orders, setOrders] = useState<ProductionOrder[]>([]);
   const [history, setHistory] = useState<Movement[]>([]);
-  
+   
   const [loading, setLoading] = useState(true);
   const [aiAdvice, setAiAdvice] = useState<string[]>([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -52,7 +52,7 @@ const App: React.FC = () => {
     console.log("💾 Datos persistidos manualmente");
   }, [products, mps, recipes, orders, history, user]);
 
-  // AUTO-SAVE POR SEGURIDAD (Cada vez que algo cambia)
+  // AUTO-SAVE POR SEGURIDAD
   useEffect(() => {
     if (!loading && user) {
       const dataToSave = { products, mps, recipes, orders, history, user };
@@ -75,16 +75,20 @@ const App: React.FC = () => {
     }
   };
 
-  // CHEQUEO DE CONEXIÓN
+  // 3. CAMBIO: Chequeo de conexión con Firestore
   useEffect(() => {
     const checkConn = async () => {
       try {
-        const { error } = await supabase.from('products').select('count', { count: 'exact', head: true });
-        setIsOnline(!error);
-      } catch { setIsOnline(false); }
+        // Intentamos leer la colección de productos para ver si hay conexión
+        await getDocs(collection(db, 'products')); 
+        setIsOnline(true);
+      } catch (e) { 
+        console.log("Modo Offline activo", e);
+        setIsOnline(false); 
+      }
     };
     checkConn();
-  }, [supabase]);
+  }, []);
 
   // CARGA DE DATOS (LOCAL PRIORITARIO)
   const loadData = useCallback(() => {
@@ -99,10 +103,8 @@ const App: React.FC = () => {
       setHistory(d.history || []);
       if (d.user) setUser(d.user);
     } else {
-      // Si no hay nada, cargar catálogo inicial
       const initialProducts = INITIAL_CATALOG.map((p, i) => ({ ...p, id: `p-${Date.now()}-${i}`, wip: 0 }));
       setProducts(initialProducts);
-      // Guardar de inmediato el estado inicial
       localStorage.setItem(K.STABLE, JSON.stringify({ products: initialProducts, mps: [], recipes: [], orders: [], history: [], user: null }));
     }
     setLoading(false);
@@ -110,34 +112,55 @@ const App: React.FC = () => {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // ACCIONES
+  // 4. CAMBIO: ACCIONES CON FIRESTORE
+
   const logMovement = useCallback(async (tipo: string, detalle: string) => {
     const newMov = { id: Math.random().toString(36).substr(2, 9), ts: new Date().toISOString(), tipo, detalle, user: user?.name || 'Sistema' };
     setHistory(prev => [newMov, ...prev].slice(0, 100));
-    if (isOnline) await supabase.from('history').insert([newMov]);
-  }, [user, isOnline, supabase]);
+    
+    if (isOnline) {
+      try {
+        // Usamos addDoc para historial (ID automático o el generado)
+        await setDoc(doc(db, 'history', newMov.id), newMov); 
+      } catch (e) { console.error("Error log movement", e); }
+    }
+  }, [user, isOnline]);
 
   const handleUpdateProductField = async (id: string, field: keyof Product, value: any) => {
     setProducts(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
-    if (isOnline) await supabase.from('products').update({ [field]: value }).eq('id', id);
+    if (isOnline) {
+      try {
+        const ref = doc(db, 'products', id);
+        await updateDoc(ref, { [field]: value });
+      } catch (e) { console.error("Error update product", e); }
+    }
   };
 
   const handleUpdateMpField = async (id: string, field: keyof RawMaterial, value: any) => {
     setMps(prev => prev.map(m => m.id === id ? { ...m, [field]: value } : m));
-    if (isOnline) await supabase.from('mps').update({ [field]: value }).eq('id', id);
+    if (isOnline) {
+      try {
+        const ref = doc(db, 'mps', id);
+        await updateDoc(ref, { [field]: value });
+      } catch (e) { console.error("Error update mp", e); }
+    }
   };
 
   const handleDeleteProduct = (id: string) => {
     if (confirm('¿Eliminar SKU?')) {
       setProducts(prev => prev.filter(p => p.id !== id));
-      if (isOnline) supabase.from('products').delete().eq('id', id);
+      if (isOnline) {
+        deleteDoc(doc(db, 'products', id)).catch(e => console.error(e));
+      }
     }
   };
 
   const handleDeleteMp = (id: string) => {
     if (confirm('¿Eliminar insumo?')) {
       setMps(prev => prev.filter(m => m.id !== id));
-      if (isOnline) supabase.from('mps').delete().eq('id', id);
+      if (isOnline) {
+        deleteDoc(doc(db, 'mps', id)).catch(e => console.error(e));
+      }
     }
   };
 
@@ -195,7 +218,11 @@ const App: React.FC = () => {
     else await handleUpdateMpField(targetId, 'wip', ((target as RawMaterial).wip || 0) + qty);
 
     logMovement('PRODUCCION_INICIO', `${qty}u de ${target.sku}`);
-    if (isOnline) await supabase.from('orders').insert([newOrder]);
+    
+    if (isOnline) {
+      // Guardamos la orden en Firestore
+      setDoc(doc(db, 'orders', newOrder.id), newOrder).catch(e => console.error(e));
+    }
   };
 
   const handleCompleteOrder = async (order: ProductionOrder) => {
@@ -214,18 +241,27 @@ const App: React.FC = () => {
     }
     setOrders(prev => prev.filter(o => o.id !== order.id));
     logMovement('PRODUCCION_FIN', `${order.qty}u ${order.productName}`);
-    if (isOnline) await supabase.from('orders').update({ status: 'completed' }).eq('id', order.id);
+    
+    if (isOnline) {
+      // Actualizamos estado de la orden (o la borramos, según tu lógica visual la borras del array local)
+      // Como en tu código local la borras con filter, acá la borramos de DB también para mantener sincro
+      deleteDoc(doc(db, 'orders', order.id)).catch(e => console.error(e));
+    }
   };
 
   const handleAddRecipeItem = (targetId: string, targetType: 'product' | 'mp', mpId: string, qty: number) => {
     const newRecipe: Recipe = { id: Math.random().toString(36).substr(2, 9), targetId, targetType, mpId, qty };
     setRecipes(prev => [...prev, newRecipe]);
-    if (isOnline) supabase.from('recipes').insert([newRecipe]);
+    if (isOnline) {
+      setDoc(doc(db, 'recipes', newRecipe.id), newRecipe).catch(e => console.error(e));
+    }
   };
 
   const handleDeleteRecipeItem = (id: string) => {
     setRecipes(prev => prev.filter(r => r.id !== id));
-    if (isOnline) supabase.from('recipes').delete().eq('id', id);
+    if (isOnline) {
+      deleteDoc(doc(db, 'recipes', id)).catch(e => console.error(e));
+    }
   };
 
   // EXPORTADORES
@@ -289,18 +325,51 @@ const App: React.FC = () => {
     e.target.value = '';
   };
 
+  // 5. CAMBIO: FUNCIÓN DE SINCRONIZACIÓN (Wipe & Replace)
   const syncToCloud = async () => {
     if (!isOnline) { alert("Sin conexión a la nube."); return; }
+    if (!confirm("⚠️ ATENCIÓN: Esto borrará lo que hay en la nube y subirá lo que tienes en pantalla.\n\n¿Continuar?")) return;
+
     try {
       setLoading(true);
-      await supabase.from('products').delete().neq('id', '0');
-      await supabase.from('mps').delete().neq('id', '0');
-      await supabase.from('recipes').delete().neq('id', '0');
-      if (products.length > 0) await supabase.from('products').insert(products);
-      if (mps.length > 0) await supabase.from('mps').insert(mps);
-      if (recipes.length > 0) await supabase.from('recipes').insert(recipes);
-      alert("✅ Sincronización con la nube completada.");
+      
+      // Función auxiliar para subir un array completo a una colección
+      const uploadCollection = async (colName: string, items: any[]) => {
+        const batchSize = 400; // Firebase limite de batch es 500
+        const chunks = [];
+        
+        // 1. Borrar colección vieja (manualmente en cliente es lento, mejor sobrescribir)
+        // Para simplificar y asegurar integridad, vamos a iterar y sobrescribir todo.
+        // Si hay items viejos que borraste localmente, quedarán "huerfanos" en la nube 
+        // a menos que borremos todo antes. Vamos a intentar borrar todo primero.
+        
+        const q = await getDocs(collection(db, colName));
+        const deleteBatch = writeBatch(db);
+        q.forEach((doc) => {
+          deleteBatch.delete(doc.ref);
+        });
+        await deleteBatch.commit();
+
+        // 2. Subir lo nuevo
+        for (let i = 0; i < items.length; i += batchSize) {
+            const chunk = items.slice(i, i + batchSize);
+            const batch = writeBatch(db);
+            chunk.forEach((item) => {
+                const ref = doc(db, colName, item.id);
+                batch.set(ref, item);
+            });
+            await batch.commit();
+        }
+      };
+
+      await uploadCollection('products', products);
+      await uploadCollection('mps', mps);
+      await uploadCollection('recipes', recipes);
+      // Opcional: Orders y History si quieres (pueden ser muchos datos)
+      
+      alert("✅ Sincronización con FIREBASE completada.");
     } catch (e) {
+      console.error(e);
       alert("❌ Error al sincronizar: " + e);
     } finally {
       setLoading(false);
@@ -341,7 +410,7 @@ const App: React.FC = () => {
           >
             {isFullscreen ? <Minimize size={24} /> : <Maximize size={24} />}
           </button>
-          <Badge type={isOnline ? 'ok' : 'warn'} text={isOnline ? 'ONLINE' : 'OFFLINE'} />
+          <Badge type={isOnline ? 'ok' : 'warn'} text={isOnline ? 'ONLINE (Firebase)' : 'OFFLINE'} />
           <button onClick={() => { setUser(null); }} className="p-2 text-slate-400 hover:text-red-500 transition-colors"><LogOut size={24}/></button>
         </div>
       </header>
@@ -423,7 +492,9 @@ const App: React.FC = () => {
                     setMps(updated);
                     localStorage.setItem(K.STABLE, JSON.stringify({ products, mps: updated, recipes, orders, history, user }));
                     setShowAddMp(false);
-                    if (isOnline) supabase.from('mps').insert(newMp);
+                    if (isOnline) {
+                         setDoc(doc(db, 'mps', newMp.id), newMp).catch(e => console.error(e));
+                    }
                     alert("Insumo guardado correctamente.");
                   }} className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <Input name="sku" placeholder="Código (Ej: TU-32)" required />
@@ -472,7 +543,9 @@ const App: React.FC = () => {
                     setProducts(updated);
                     localStorage.setItem(K.STABLE, JSON.stringify({ products: updated, mps, recipes, orders, history, user }));
                     setShowAddProduct(false);
-                    if (isOnline) supabase.from('products').insert(newProd);
+                    if (isOnline) {
+                        setDoc(doc(db, 'products', newProd.id), newProd).catch(e => console.error(e));
+                    }
                     alert("Producto guardado correctamente.");
                   }} className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <Input name="sku" placeholder="SKU" required />
@@ -493,11 +566,11 @@ const App: React.FC = () => {
             <div className="max-w-2xl mx-auto py-10">
               <Card className="p-12 text-center space-y-8 bg-white shadow-2xl rounded-[3rem]">
                 <Globe size={80} className={`mx-auto ${isOnline ? 'text-emerald-500' : 'text-slate-300'}`} />
-                <h3 className="text-3xl font-black text-slate-800">{isOnline ? 'Conexión a la Nube Activa' : 'Modo de Trabajo Local'}</h3>
+                <h3 className="text-3xl font-black text-slate-800">{isOnline ? 'Conexión a Firebase Activa' : 'Modo de Trabajo Local'}</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <Button variant="secondary" onClick={handlePrint} className="py-6" icon={Printer}>Imprimir PDF</Button>
                   <Button variant="secondary" onClick={exportToCsv} className="py-6" icon={FileSpreadsheet}>Exportar Excel</Button>
-                  <Button variant="special" onClick={syncToCloud} className="col-span-full py-6" icon={CloudUpload}>Sincronizar todo con Supabase</Button>
+                  <Button variant="special" onClick={syncToCloud} className="col-span-full py-6" icon={CloudUpload}>Sincronizar todo con Firebase</Button>
                   <Button variant="primary" onClick={() => { forceSave(); alert("✅ Guardado local completado."); }} className="col-span-full py-6" icon={Save}>Guardar Todo Ahora</Button>
                 </div>
               </Card>
