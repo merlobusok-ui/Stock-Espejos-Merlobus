@@ -849,21 +849,33 @@ const OperationsManager = ({ products, mps, recipes, orders, onStartOrder, onCom
     </div>
   );
 };
-
 const PlanningView = ({ products, mps, recipes }: any) => {
   const [sel, setSel] = useState('');
   const [qty, setQty] = useState(1);
 
+  // ESTA ES LA FUNCIÓN QUE SE ROMPÍA. AHORA TIENE FRENO DE SEGURIDAD (depth > 10).
   const getFullRequirements = useCallback((targetId: string, targetType: 'product' | 'mp', multiplier: number, depth: number = 0): any[] => {
+    // 1. FRENO DE MANO: Si entramos en un bucle infinito, cortamos acá para no colgar la PC.
+    if (depth > 10) {
+        console.error("⚠️ Se detectó una receta circular o demasiado profunda. Cortando cálculo.");
+        return [{ mp: { desc: "ERROR: BUCLE EN RECETA", sku: "ERR-LOOP", stock: 0 }, needed: 0, depth, parentId: targetId }];
+    }
+
     const immediate = recipes.filter((r: any) => r.targetId === targetId && r.targetType === targetType);
     let all: any[] = [];
+    
     immediate.forEach((r: any) => {
       const mp = mps.find((m: any) => m.id === r.mpId);
       const neededTotal = r.qty * multiplier;
+      
       all.push({ mp, needed: neededTotal, depth, parentId: targetId });
-      const subRecipes = recipes.filter((sr: any) => sr.targetId === r.mpId && sr.targetType === 'mp');
-      if (subRecipes.length > 0) {
-        all = [...all, ...getFullRequirements(r.mpId, 'mp', neededTotal, depth + 1)];
+      
+      // Solo seguimos buscando hijos si NO es el mismo ID (evita bucle directo A -> A)
+      if (r.mpId !== targetId) {
+          const subRecipes = recipes.filter((sr: any) => sr.targetId === r.mpId && sr.targetType === 'mp');
+          if (subRecipes.length > 0) {
+            all = [...all, ...getFullRequirements(r.mpId, 'mp', neededTotal, depth + 1)];
+          }
       }
     });
     return all;
@@ -871,7 +883,12 @@ const PlanningView = ({ products, mps, recipes }: any) => {
 
   const requirements = useMemo(() => {
     if (!sel) return [];
-    return getFullRequirements(sel, 'product', qty);
+    try {
+        return getFullRequirements(sel, 'product', qty);
+    } catch (e) {
+        console.error("Error calculando receta", e);
+        return [];
+    }
   }, [sel, qty, getFullRequirements]);
 
   return (
@@ -904,14 +921,17 @@ const PlanningView = ({ products, mps, recipes }: any) => {
               {requirements.map((req:any, i:number) => {
                 const diff = (req.mp?.stock || 0) - req.needed;
                 const isSemie = recipes.some((sr: any) => sr.targetId === req.mp?.id && sr.targetType === 'mp');
+                // Check visual para detectar dónde está el error
+                const isError = req.mp?.sku === 'ERR-LOOP';
+                
                 return (
-                  <tr key={i} className={`text-sm hover:bg-slate-50 transition-colors ${req.depth > 0 ? 'bg-blue-50/10' : ''}`}>
+                  <tr key={i} className={`text-sm hover:bg-slate-50 transition-colors ${req.depth > 0 ? 'bg-blue-50/10' : ''} ${isError ? 'bg-red-100' : ''}`}>
                     <td className="py-4 md:py-6 text-slate-300 font-mono text-xs">{i+1}</td>
                     <td className="py-4 md:py-6">
                       <div className="flex items-center gap-4" style={{ paddingLeft: `${req.depth * 20}px` }}>
-                        {req.depth > 0 ? <ChevronRight size={18} className="text-blue-400" /> : <div className="w-3 h-3 bg-slate-800 rounded-full"></div>}
-                        <span className={`font-black uppercase text-sm md:text-lg ${req.depth > 0 ? 'text-blue-700' : 'text-slate-800'}`}>
-                          {req.mp?.desc || req.mp?.sku || 'Material'}
+                        {req.depth > 0 ? <RefreshCw size={14} className="text-blue-400" /> : <div className="w-3 h-3 bg-slate-800 rounded-full"></div>}
+                        <span className={`font-black uppercase text-sm md:text-lg ${req.depth > 0 ? 'text-blue-700' : 'text-slate-800'} ${isError ? 'text-red-600' : ''}`}>
+                          {req.mp?.desc || req.mp?.sku || 'Material desconocido'}
                         </span>
                         {isSemie && <Badge type="warn" text="SEMI" />}
                       </div>
@@ -929,5 +949,4 @@ const PlanningView = ({ products, mps, recipes }: any) => {
     </div>
   );
 };
-
 export default App;
