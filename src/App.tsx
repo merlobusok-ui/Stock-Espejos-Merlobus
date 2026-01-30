@@ -5,7 +5,8 @@ import { collection, doc, setDoc, updateDoc, deleteDoc, getDocs, writeBatch, onS
 import { 
   Package, LogOut, Factory, AlertCircle, BrainCircuit, Loader2, 
   ArrowRight, Layers, Globe, Save, Plus, Trash2, CheckCircle, Truck, X, 
-  Download, FileUp, Edit2, Search, Printer, Hammer, FileSpreadsheet, CloudUpload, Maximize, Minimize, RefreshCw, UploadCloud
+  Download, FileUp, Edit2, Search, Printer, Hammer, FileSpreadsheet, 
+  CloudUpload, Maximize, Minimize, RefreshCw, UploadCloud, FileText, ShoppingCart
 } from 'lucide-react';
 import { 
   ViewType, Product, RawMaterial, Recipe, ProductionOrder, Movement, UserProfile 
@@ -174,8 +175,6 @@ const App: React.FC = () => {
   };
 
   // --- IMPORTADORES MASIVOS CSV ---
-
-  // 1. PRODUCTOS Y MPS (Simple)
   const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'products' | 'mps') => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -186,7 +185,7 @@ const App: React.FC = () => {
       const newItems: any[] = [];
       
       lines.forEach((row, idx) => {
-        if(idx === 0 && row.toLowerCase().includes('sku')) return; // Skip header if exists
+        if(idx === 0 && row.toLowerCase().includes('sku')) return;
         const v = row.split(',').map(s => s.trim());
         if (type === 'products' && v[0]) {
           newItems.push({ id: `p-${Date.now()}-${Math.random()}`, sku: v[0], marca: v[1]||'', modelo: v[2]||'', lado: v[3]||'', min: parseInt(v[4])||5, stock: parseInt(v[5])||0, wip: 0 });
@@ -205,7 +204,6 @@ const App: React.FC = () => {
     e.target.value = '';
   };
 
-  // 2. RECETAS (Avanzado: Vincula por SKU)
   const handleCsvRecipes = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -214,23 +212,17 @@ const App: React.FC = () => {
         const lines = (event.target?.result as string).split('\n').filter(l => l.trim() !== '');
         const newRecipes: Recipe[] = [];
         let errors = 0;
-
         lines.forEach((row, idx) => {
             if(idx === 0 && row.toLowerCase().includes('sku')) return;
             const v = row.split(',').map(s => s.trim());
-            // FORMATO: SKU_PRODUCTO, SKU_INSUMO, CANTIDAD
             const prodSku = v[0];
             const mpSku = v[1];
             const qty = parseFloat(v[2]);
-
             const prod = products.find(p => p.sku === prodSku);
             const mp = mps.find(m => m.sku === mpSku);
-
             if (prod && mp && qty > 0) {
                 newRecipes.push({ id: `r-${Date.now()}-${Math.random()}`, targetId: prod.id, targetType: 'product', mpId: mp.id, qty });
-            } else {
-                errors++;
-            }
+            } else { errors++; }
         });
 
         if (newRecipes.length > 0 && confirm(`Encontradas ${newRecipes.length} relaciones válidas.\n(Errores/No encontrados: ${errors})\n\n¿Vincular recetas ahora?`)) {
@@ -238,8 +230,6 @@ const App: React.FC = () => {
             newRecipes.forEach(r => batch.set(doc(db, 'recipes', r.id), r));
             await batch.commit();
             alert("✅ Recetas vinculadas correctamente.");
-        } else if (newRecipes.length === 0) {
-            alert("⚠️ No se pudieron vincular recetas. Verificá que los SKU existan en el sistema.");
         }
     };
     reader.readAsText(file);
@@ -339,7 +329,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {activeTab === ViewType.PLANNING && <PlanningView products={products} mps={mps} recipes={recipes} />}
+          {activeTab === ViewType.PLANNING && <PlanningView products={products} mps={mps} recipes={recipes} user={user} />}
 
           {activeTab === ViewType.OPERATIONS && (
             <OperationsManager 
@@ -357,7 +347,7 @@ const App: React.FC = () => {
                 }} 
                 onDeleteRecipeItem={(id:string) => deleteDoc(doc(db,'recipes',id))} 
                 onForceSave={forceSave}
-                onCsvUpload={handleCsvRecipes} // PASAMOS LA FUNCIÓN DE CSV ACÁ
+                onCsvUpload={handleCsvRecipes}
             />
           )}
 
@@ -643,86 +633,7 @@ const RecipeManager = ({ products, mps, recipes, onAddRecipeItem, onDeleteRecipe
   );
 };
 
-const OperationsManager = ({ products, mps, recipes, orders, onStartOrder, onCompleteOrder, onMpEntry }: any) => {
-  const [mode, setMode] = useState<'product' | 'mp'>('product');
-  const [selId, setSelId] = useState('');
-  const [qty, setQty] = useState(1);
-  const [selMpEntry, setSelMpEntry] = useState('');
-  const [qtyMpEntry, setQtyMpEntry] = useState(1);
-
-  const previewReqs = useMemo(() => {
-    if (!selId) return [];
-    return recipes.filter((r:any) => r.targetId === selId && r.targetType === mode).map((r:any) => {
-      const mp = mps.find((m:any)=>m.id === r.mpId);
-      const needed = r.qty * qty;
-      return { name: mp?.desc || mp?.sku, stock: mp?.stock || 0, needed, ok: (mp?.stock || 0) >= needed };
-    });
-  }, [selId, qty, recipes, mps, mode]);
-
-  return (
-    <div className="space-y-10">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-        <Card className="p-6 md:p-10 space-y-6 shadow-2xl border-t-[10px] border-[#2B3860] bg-white rounded-[2rem] md:rounded-[3rem]">
-          <div className="flex justify-between items-center">
-            <h3 className="font-black text-xl md:text-2xl uppercase tracking-tighter">Plan de Fabricación</h3>
-            <div className="flex bg-slate-100 p-1.5 rounded-2xl">
-              <button onClick={()=>setMode('product')} className={`px-3 md:px-5 py-2 text-[10px] font-black rounded-xl transition-all ${mode==='product' ? 'bg-white shadow-md text-[#2B3860]':'text-slate-400'}`}>PROD</button>
-              <button onClick={()=>setMode('mp')} className={`px-3 md:px-5 py-2 text-[10px] font-black rounded-xl transition-all ${mode==='mp' ? 'bg-white shadow-md text-[#2B3860]':'text-slate-400'}`}>SEMI</button>
-            </div>
-          </div>
-          <select className="w-full p-5 border-2 rounded-[2rem] font-black bg-slate-50 text-lg md:text-xl outline-none focus:ring-4 focus:ring-blue-100" value={selId} onChange={e=>setSelId(e.target.value)}>
-            <option value="">-- Seleccionar Item --</option>
-            {mode==='product' ? products.map((p:any)=><option key={p.id} value={p.id}>{p.sku}</option>) : mps.map((m:any)=> recipes.some((r:any)=>r.targetId===m.id && r.targetType==='mp') && <option key={m.id} value={m.id}>{m.desc || m.sku}</option>)}
-          </select>
-          <Input type="number" min="1" value={qty} onChange={e=>setQty(Number(e.target.value))} className="text-4xl font-black h-24 text-center border-2 rounded-[2rem]" />
-          
-          {selId && (
-            <div className="bg-slate-50 p-6 rounded-3xl space-y-3 border shadow-inner">
-               <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Disponibilidad</p>
-               {previewReqs.map((req:any, i:number) => (
-                 <div key={i} className="flex justify-between text-sm items-center border-b border-slate-200 pb-2">
-                    <span className={`font-black ${req.ok ? 'text-slate-600' : 'text-red-600 flex items-center gap-2'}`}>{!req.ok && <AlertCircle size={14}/>} {req.name}</span>
-                    <span className={req.ok ? 'text-emerald-600 font-black' : 'text-red-600 font-black'}>{req.needed} u.</span>
-                 </div>
-               ))}
-            </div>
-          )}
-          <Button className="w-full py-6 md:py-8 text-xl md:text-2xl font-black rounded-[2rem] shadow-xl" variant="special" icon={Factory} disabled={!selId} onClick={()=>{onStartOrder(selId, mode, qty); setSelId(''); setQty(1);}}>LANZAR A TALLER</Button>
-        </Card>
-
-        <Card className="p-6 md:p-10 space-y-6 shadow-2xl border-t-[10px] border-emerald-600 bg-white rounded-[2rem] md:rounded-[3rem]">
-          <h3 className="font-black text-xl md:text-2xl uppercase tracking-tighter flex items-center gap-3"><Truck className="text-emerald-600"/> Entrada de Insumos</h3>
-          <select className="w-full p-5 border-2 rounded-[2rem] font-black bg-slate-50 text-lg md:text-xl outline-none focus:ring-4 focus:ring-emerald-100" value={selMpEntry} onChange={e=>setSelMpEntry(e.target.value)}>
-            <option value="">-- Seleccionar Insumo --</option>
-            {mps.map((m:any) => <option key={m.id} value={m.id}>{m.desc || m.sku}</option>)}
-          </select>
-          <Input type="number" min="1" value={qtyMpEntry} onChange={e=>setQtyMpEntry(Number(e.target.value))} className="text-4xl font-black h-24 text-center border-2 rounded-[2rem]" />
-          <Button className="w-full py-6 md:py-8 text-xl md:text-2xl font-black rounded-[2rem] shadow-xl" variant="success" icon={Download} disabled={!selMpEntry} onClick={()=>{onMpEntry(selMpEntry, qtyMpEntry); setSelMpEntry(''); setQtyMpEntry(1);}}>CONFIRMAR INGRESO</Button>
-        </Card>
-
-        <Card className="p-6 md:p-12 shadow-2xl bg-[#0f172a] text-white lg:col-span-2 rounded-[2rem] md:rounded-[3.5rem] border border-slate-800">
-          <div className="flex justify-between items-center mb-10 border-b border-slate-800 pb-6">
-            <h3 className="font-black text-xl md:text-3xl uppercase tracking-widest flex items-center gap-4"><Hammer className="text-blue-400" /> Producción</h3>
-            <Badge type="process" text={`${orders.length} ÓRDENES`} />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {orders.map((o:any) => (
-              <div key={o.id} className="p-8 bg-slate-800/60 border-2 border-slate-700 rounded-[2.5rem] space-y-6 shadow-xl group transition-all hover:border-blue-500">
-                <Badge type={o.targetType === 'mp' ? 'warn' : 'info'} text={o.targetType === 'mp' ? 'ESTR' : 'ESP'} />
-                <p className="font-black text-white text-2xl leading-tight group-hover:text-blue-300 transition-colors">{o.productName}</p>
-                <p className="text-blue-400 font-black text-lg uppercase tracking-tighter">Lote: {o.qty} Unidades</p>
-                <Button onClick={() => onCompleteOrder(o)} variant="success" size="lg" className="w-full py-5 text-xl font-black rounded-3xl group-hover:scale-105 transition-transform">TERMINAR</Button>
-              </div>
-            ))}
-            {orders.length === 0 && <div className="col-span-full text-center py-24 text-slate-700 font-black uppercase text-2xl border-4 border-dashed border-slate-800 rounded-[3rem] opacity-40 italic">Taller en espera</div>}
-          </div>
-        </Card>
-      </div>
-    </div>
-  );
-};
-
-const PlanningView = ({ products, mps, recipes }: any) => {
+const PlanningView = ({ products, mps, recipes, user }: any) => {
   const [sel, setSel] = useState('');
   const [qty, setQty] = useState(1);
 
@@ -750,9 +661,118 @@ const PlanningView = ({ products, mps, recipes }: any) => {
     try { return getFullRequirements(sel, 'product', qty); } catch (e) { return []; }
   }, [sel, qty, getFullRequirements]);
 
+  const printPurchaseOrder = () => {
+    const missingItems = requirements.filter((r: any) => (r.mp?.stock || 0) < r.needed);
+    if (missingItems.length === 0) {
+        alert("¡Excelente! Tienes stock suficiente de todo. No hace falta comprar nada.");
+        return;
+    }
+    const productDetails = products.find((p:any) => p.id === sel);
+    
+    // Generar el HTML para impresión
+    const printContent = `
+        <html>
+        <head>
+            <title>Orden de Compra - Merlobus</title>
+            <style>
+                body { font-family: 'Arial', sans-serif; padding: 40px; color: #1e293b; }
+                .header { border-bottom: 3px solid #1e293b; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: end; }
+                .title { font-size: 24px; font-weight: 900; text-transform: uppercase; color: #1e293b; }
+                .meta { text-align: right; font-size: 14px; color: #64748b; }
+                .context { background: #f1f5f9; padding: 20px; border-radius: 10px; margin-bottom: 30px; border-left: 5px solid #2563eb; }
+                table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                th { background: #1e293b; color: white; padding: 12px; text-align: left; text-transform: uppercase; font-size: 12px; }
+                td { padding: 12px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+                .missing { color: #dc2626; font-weight: bold; }
+                .total-row { background: #f8fafc; font-weight: bold; }
+                .footer { margin-top: 50px; border-top: 1px solid #cbd5e1; padding-top: 20px; display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <div>
+                    <div class="title">ORDEN DE COMPRA / REPOSICIÓN</div>
+                    <div style="font-size: 14px; margin-top: 5px;">MERLOBUS STOCK PRO</div>
+                </div>
+                <div class="meta">
+                    <strong>FECHA:</strong> ${new Date().toLocaleDateString()}<br/>
+                    <strong>HORA:</strong> ${new Date().toLocaleTimeString()}<br/>
+                    <strong>ORDEN #:</strong> OC-${Date.now().toString().slice(-6)}
+                </div>
+            </div>
+
+            <div class="context">
+                <div style="font-size: 12px; text-transform: uppercase; color: #64748b; font-weight: bold; margin-bottom: 5px;">MOTIVO DE LA ORDEN</div>
+                <div style="font-size: 18px; font-weight: bold;">
+                    Producción de ${qty} u. de ${productDetails?.sku || 'Producto'}
+                </div>
+                <div style="font-size: 14px; color: #475569;">${productDetails?.marca || ''} ${productDetails?.modelo || ''}</div>
+            </div>
+
+            <h3 style="text-transform: uppercase; font-size: 16px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">Listado de Faltantes a Comprar</h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>CÓDIGO / SKU</th>
+                        <th>DESCRIPCIÓN MATERIAL</th>
+                        <th style="text-align: center;">STOCK ACTUAL</th>
+                        <th style="text-align: center;">NECESARIO</th>
+                        <th style="text-align: center;">A COMPRAR</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${missingItems.map((item: any) => {
+                        const diff = Math.abs((item.mp?.stock || 0) - item.needed);
+                        return `
+                        <tr>
+                            <td style="font-family: monospace;">${item.mp?.sku || 'N/A'}</td>
+                            <td>${item.mp?.desc || 'Desconocido'}</td>
+                            <td style="text-align: center; color: #64748b;">${item.mp?.stock || 0}</td>
+                            <td style="text-align: center;">${item.needed}</td>
+                            <td style="text-align: center;" class="missing">${diff}</td>
+                        </tr>
+                        `
+                    }).join('')}
+                </tbody>
+            </table>
+
+            <div class="footer">
+                <div>SOLICITADO POR: <strong>${user?.name || 'SISTEMA'}</strong></div>
+                <div>AUTORIZADO POR: __________________________</div>
+            </div>
+            
+            <script>
+                window.onload = function() { window.print(); window.close(); }
+            </script>
+        </body>
+        </html>
+    `;
+    
+    // Abrir ventana de impresión
+    const printWindow = window.open('', 'PRINT', 'height=800,width=1000');
+    if (printWindow) {
+        printWindow.document.write(printContent);
+        printWindow.document.close();
+        printWindow.focus();
+    } else {
+        alert("Por favor habilita las ventanas emergentes para imprimir.");
+    }
+  };
+
+  const hasMissing = requirements.some((r:any) => (r.mp?.stock || 0) < r.needed);
+
   return (
     <div className="space-y-10 animate-in slide-in-from-bottom-2">
-      <SectionHeader title="Explosión de Materiales" subtitle="Planifica las compras" />
+      <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
+        <SectionHeader title="Explosión de Materiales" subtitle="Planifica las compras" />
+        {sel && hasMissing && (
+             <Button onClick={printPurchaseOrder} variant="special" size="lg" icon={FileText} className="animate-pulse shadow-xl border-2 border-orange-300">
+                IMPRIMIR ORDEN DE COMPRA
+             </Button>
+        )}
+      </div>
+      
       <Card className="p-6 md:p-10 bg-[#2B3860] text-white flex flex-col md:flex-row gap-8 items-end shadow-2xl rounded-[2rem] md:rounded-[3rem]">
         <div className="flex-1 w-full"><label className="text-[10px] font-black uppercase text-blue-300 mb-4 block tracking-widest">Espejo</label>
           <select className="w-full p-5 rounded-[2rem] text-slate-900 font-black text-xl outline-none" value={sel} onChange={e=>setSel(e.target.value)}>
