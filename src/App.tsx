@@ -174,6 +174,97 @@ const App: React.FC = () => {
     deleteDoc(doc(db, 'orders', order.id));
   };
 
+  // --- REPORTES E IMPRESIÓN ---
+  const generateStockReport = () => {
+    const printContent = `
+      <html>
+        <head>
+          <title>Reporte General de Stock - Merlobus</title>
+          <style>
+            body { font-family: 'Arial', sans-serif; padding: 20px; color: #1e293b; }
+            h1 { color: #2B3860; border-bottom: 2px solid #2B3860; padding-bottom: 10px; }
+            h2 { margin-top: 30px; background-color: #f1f5f9; padding: 10px; border-radius: 5px; font-size: 16px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+            th { background: #2B3860; color: white; padding: 8px; text-align: left; }
+            td { padding: 8px; border-bottom: 1px solid #e2e8f0; }
+            .low-stock { color: #dc2626; font-weight: bold; }
+            .meta { font-size: 10px; text-align: right; color: #64748b; margin-top: 5px; }
+          </style>
+        </head>
+        <body>
+          <div class="meta">Generado el ${new Date().toLocaleString()} por ${user?.name || 'Sistema'}</div>
+          <h1>REPORTE GENERAL DE STOCK</h1>
+
+          <h2>1. PRODUCTOS TERMINADOS (${products.length} SKU)</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>SKU</th><th>MARCA</th><th>MODELO</th><th>LADO</th>
+                <th style="text-align:center">MÍN</th>
+                <th style="text-align:center">STOCK</th>
+                <th style="text-align:center">TALLER</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${products.map(p => `
+                <tr>
+                  <td><strong>${p.sku}</strong></td>
+                  <td>${p.marca}</td>
+                  <td>${p.modelo}</td>
+                  <td>${p.lado}</td>
+                  <td style="text-align:center">${p.min}</td>
+                  <td style="text-align:center" class="${p.stock < p.min ? 'low-stock' : ''}">${p.stock}</td>
+                  <td style="text-align:center">${p.wip || 0}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+
+          <h2>2. MATERIAS PRIMAS / INSUMOS (${mps.length} Items)</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>CÓDIGO</th><th>DESCRIPCIÓN</th>
+                <th style="text-align:center">MÍN</th>
+                <th style="text-align:center">STOCK</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${mps.map(m => `
+                <tr>
+                  <td><strong>${m.sku}</strong></td>
+                  <td>${m.desc}</td>
+                  <td style="text-align:center">${m.min}</td>
+                  <td style="text-align:center" class="${m.stock < m.min ? 'low-stock' : ''}">${m.stock}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <script>window.onload = function() { window.print(); window.close(); }</script>
+        </body>
+      </html>
+    `;
+    
+    const printWindow = window.open('', 'PRINT_REPORT', 'height=800,width=1000');
+    if (printWindow) {
+        printWindow.document.write(printContent);
+        printWindow.document.close();
+    } else {
+        alert("Por favor habilita las ventanas emergentes para imprimir.");
+    }
+  };
+
+  const exportToCsv = () => {
+    const headers = "Tipo,SKU,Marca,Modelo,Lado,Stock,Minimo,En Taller\n";
+    const pRows = products.map(p => `Espejo,${p.sku},${p.marca},${p.modelo},${p.lado},${p.stock},${p.min},${p.wip}`).join("\n");
+    const mRows = mps.map(m => `Insumo,${m.sku},${m.desc},,,${m.stock},${m.min},${m.wip || 0}`).join("\n");
+    const blob = new Blob([headers + pRows + "\n" + mRows], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `merlobus_stock_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+  };
+
   // --- IMPORTADORES MASIVOS CSV ---
   const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'products' | 'mps') => {
     const file = e.target.files?.[0];
@@ -356,7 +447,7 @@ const App: React.FC = () => {
               <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
                 <SectionHeader title="Insumos" />
                 <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-2">
-                   <Button onClick={()=>window.print()} variant="secondary" icon={Printer}>Print</Button>
+                   <Button onClick={generateStockReport} variant="secondary" icon={Printer}>Imprimir</Button>
                    <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all font-bold text-xs whitespace-nowrap text-slate-600">
                       <FileUp size={16} /> Subir CSV
                       <input type="file" accept=".csv" className="hidden" onChange={(e) => handleCsvUpload(e, 'mps')} />
@@ -397,7 +488,7 @@ const App: React.FC = () => {
                <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
                 <SectionHeader title="Productos Finales" />
                  <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-2">
-                   <Button onClick={()=>window.print()} variant="secondary" icon={Printer}>Print</Button>
+                   <Button onClick={generateStockReport} variant="secondary" icon={Printer}>Imprimir</Button>
                    <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all font-bold text-xs whitespace-nowrap text-slate-600">
                       <FileUp size={16} /> Subir CSV
                       <input type="file" accept=".csv" className="hidden" onChange={(e) => handleCsvUpload(e, 'products')} />
@@ -441,6 +532,9 @@ const App: React.FC = () => {
                 <Globe size={80} className={`mx-auto ${isOnline ? 'text-emerald-500' : 'text-slate-300'}`} />
                 <h3 className="text-2xl md:text-3xl font-black text-slate-800">{isOnline ? 'Sincronización en Vivo ACTIVA' : 'Modo Offline'}</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Button variant="secondary" onClick={generateStockReport} className="py-6" icon={Printer}>Imprimir Reporte General</Button>
+                  <Button variant="secondary" onClick={exportToCsv} className="py-6" icon={FileSpreadsheet}>Exportar Excel (CSV)</Button>
+                  
                   <label className="col-span-full py-6 flex items-center justify-center gap-2 cursor-pointer bg-orange-50 text-orange-600 border border-orange-200 px-4 rounded-xl hover:bg-orange-100 transition-all font-black text-sm uppercase">
                       <UploadCloud size={20} /> Restaurar Backup JSON (Completo)
                       <input type="file" accept=".json" className="hidden" onChange={handleJsonRestore} />
