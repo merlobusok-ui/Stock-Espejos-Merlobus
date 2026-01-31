@@ -633,6 +633,98 @@ const RecipeManager = ({ products, mps, recipes, onAddRecipeItem, onDeleteRecipe
   );
 };
 
+const OperationsManager = ({ products = [], mps = [], recipes = [], orders = [], onStartOrder, onCompleteOrder, onMpEntry }: any) => {
+  const [mode, setMode] = useState<'product' | 'mp'>('product');
+  const [selId, setSelId] = useState('');
+  const [qty, setQty] = useState(1);
+  const [selMpEntry, setSelMpEntry] = useState('');
+  const [qtyMpEntry, setQtyMpEntry] = useState(1);
+
+  // SAFEGUARD: Limpiar selección si cambiamos de modo
+  useEffect(() => { setSelId(''); }, [mode]);
+
+  const previewReqs = useMemo(() => {
+    if (!selId) return [];
+    return (recipes || []).filter((r:any) => r.targetId === selId && r.targetType === mode).map((r:any) => {
+      const mp = (mps || []).find((m:any)=>m.id === r.mpId);
+      const needed = r.qty * qty;
+      return { name: mp?.desc || mp?.sku || 'Desconocido', stock: mp?.stock || 0, needed, ok: (mp?.stock || 0) >= needed };
+    });
+  }, [selId, qty, recipes, mps, mode]);
+
+  // Filtrado seguro para el select (evita crash si recipes es undefined)
+  const availableOptions = useMemo(() => {
+      if (mode === 'product') return products || [];
+      return (mps || []).filter((m:any) => (recipes || []).some((r:any) => r.targetId === m.id && r.targetType === 'mp'));
+  }, [mode, products, mps, recipes]);
+
+  return (
+    <div className="space-y-10">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+        <Card className="p-6 md:p-10 space-y-6 shadow-2xl border-t-[10px] border-[#2B3860] bg-white rounded-[2rem] md:rounded-[3rem]">
+          <div className="flex justify-between items-center">
+            <h3 className="font-black text-xl md:text-2xl uppercase tracking-tighter">Plan de Fabricación</h3>
+            <div className="flex bg-slate-100 p-1.5 rounded-2xl">
+              <button onClick={()=>setMode('product')} className={`px-3 md:px-5 py-2 text-[10px] font-black rounded-xl transition-all ${mode==='product' ? 'bg-white shadow-md text-[#2B3860]':'text-slate-400'}`}>PROD</button>
+              <button onClick={()=>setMode('mp')} className={`px-3 md:px-5 py-2 text-[10px] font-black rounded-xl transition-all ${mode==='mp' ? 'bg-white shadow-md text-[#2B3860]':'text-slate-400'}`}>SEMI</button>
+            </div>
+          </div>
+          <select className="w-full p-5 border-2 rounded-[2rem] font-black bg-slate-50 text-lg md:text-xl outline-none focus:ring-4 focus:ring-blue-100" value={selId} onChange={e=>setSelId(e.target.value)}>
+            <option value="">-- Seleccionar Item --</option>
+            {availableOptions.map((item:any) => (
+                <option key={item.id} value={item.id}>
+                    {mode === 'product' ? item.sku : (item.desc || item.sku)}
+                </option>
+            ))}
+          </select>
+          <Input type="number" min="1" value={qty} onChange={e=>setQty(Number(e.target.value))} className="text-4xl font-black h-24 text-center border-2 rounded-[2rem]" />
+          
+          {selId && (
+            <div className="bg-slate-50 p-6 rounded-3xl space-y-3 border shadow-inner">
+               <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Disponibilidad</p>
+               {previewReqs.map((req:any, i:number) => (
+                 <div key={i} className="flex justify-between text-sm items-center border-b border-slate-200 pb-2">
+                    <span className={`font-black ${req.ok ? 'text-slate-600' : 'text-red-600 flex items-center gap-2'}`}>{!req.ok && <AlertCircle size={14}/>} {req.name}</span>
+                    <span className={req.ok ? 'text-emerald-600 font-black' : 'text-red-600 font-black'}>{req.needed} u.</span>
+                 </div>
+               ))}
+            </div>
+          )}
+          <Button className="w-full py-6 md:py-8 text-xl md:text-2xl font-black rounded-[2rem] shadow-xl" variant="special" icon={Factory} disabled={!selId} onClick={()=>{onStartOrder(selId, mode, qty); setSelId(''); setQty(1);}}>LANZAR A TALLER</Button>
+        </Card>
+
+        <Card className="p-6 md:p-10 space-y-6 shadow-2xl border-t-[10px] border-emerald-600 bg-white rounded-[2rem] md:rounded-[3rem]">
+          <h3 className="font-black text-xl md:text-2xl uppercase tracking-tighter flex items-center gap-3"><Truck className="text-emerald-600"/> Entrada de Insumos</h3>
+          <select className="w-full p-5 border-2 rounded-[2rem] font-black bg-slate-50 text-lg md:text-xl outline-none focus:ring-4 focus:ring-emerald-100" value={selMpEntry} onChange={e=>setSelMpEntry(e.target.value)}>
+            <option value="">-- Seleccionar Insumo --</option>
+            {mps.map((m:any) => <option key={m.id} value={m.id}>{m.desc || m.sku}</option>)}
+          </select>
+          <Input type="number" min="1" value={qtyMpEntry} onChange={e=>setQtyMpEntry(Number(e.target.value))} className="text-4xl font-black h-24 text-center border-2 rounded-[2rem]" />
+          <Button className="w-full py-6 md:py-8 text-xl md:text-2xl font-black rounded-[2rem] shadow-xl" variant="success" icon={Download} disabled={!selMpEntry} onClick={()=>{onMpEntry(selMpEntry, qtyMpEntry); setSelMpEntry(''); setQtyMpEntry(1);}}>CONFIRMAR INGRESO</Button>
+        </Card>
+
+        <Card className="p-6 md:p-12 shadow-2xl bg-[#0f172a] text-white lg:col-span-2 rounded-[2rem] md:rounded-[3.5rem] border border-slate-800">
+          <div className="flex justify-between items-center mb-10 border-b border-slate-800 pb-6">
+            <h3 className="font-black text-xl md:text-3xl uppercase tracking-widest flex items-center gap-4"><Hammer className="text-blue-400" /> Producción</h3>
+            <Badge type="process" text={`${(orders||[]).length} ÓRDENES`} />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {(orders||[]).map((o:any) => (
+              <div key={o.id} className="p-8 bg-slate-800/60 border-2 border-slate-700 rounded-[2.5rem] space-y-6 shadow-xl group transition-all hover:border-blue-500">
+                <Badge type={o.targetType === 'mp' ? 'warn' : 'info'} text={o.targetType === 'mp' ? 'ESTR' : 'ESP'} />
+                <p className="font-black text-white text-2xl leading-tight group-hover:text-blue-300 transition-colors">{o.productName}</p>
+                <p className="text-blue-400 font-black text-lg uppercase tracking-tighter">Lote: {o.qty} Unidades</p>
+                <Button onClick={() => onCompleteOrder(o)} variant="success" size="lg" className="w-full py-5 text-xl font-black rounded-3xl group-hover:scale-105 transition-transform">TERMINAR</Button>
+              </div>
+            ))}
+            {(orders||[]).length === 0 && <div className="col-span-full text-center py-24 text-slate-700 font-black uppercase text-2xl border-4 border-dashed border-slate-800 rounded-[3rem] opacity-40 italic">Taller en espera</div>}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
 const PlanningView = ({ products, mps, recipes, user }: any) => {
   const [sel, setSel] = useState('');
   const [qty, setQty] = useState(1);
